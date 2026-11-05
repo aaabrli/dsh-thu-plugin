@@ -1,6 +1,6 @@
 {
   "name": "dsh-thu-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH plugin: Tsinghua Learn files, course reserves, Cloud share links, and paper PDFs.",
   "repository": {
     "type": "git",

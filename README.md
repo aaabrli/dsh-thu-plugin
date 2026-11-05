@@ -4,7 +4,7 @@
 
 这个插件把清华学生常用的几个资源入口接进对话：网络学堂、教参教材、清华云盘共享链接、学术论文 PDF。你不用记命令，直接说「把数值分析A 的课件都下了」「找几篇 KV cache 压缩的论文」「帮我把这篇的 PDF 取下来」。
 
-当前版本 **0.2.0**（变更见 [doc/CHANGELOG.md](doc/CHANGELOG.md)）。
+当前版本 **0.2.1**（变更见 [doc/CHANGELOG.md](doc/CHANGELOG.md)）。
 
 ## 能做什么
 
@@ -27,7 +27,7 @@
 
 ```bash
 dsh plugin --profile web add dsh-thu-plugin
-dsh plugin --profile web add dsh-thu-plugin@0.2.0   # 想钉住版本
+dsh plugin --profile web add dsh-thu-plugin@0.2.1   # 想钉住版本
 ```
 
 `web` 就是你在用的 profile 名，换掉那一处即可。装好并重启后，设置页里会多出一页「清华工具」。
