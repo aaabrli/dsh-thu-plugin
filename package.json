@@ -1,0 +1,54 @@
+{
+  "name": "dsh-thu-plugin",
+  "version": "0.1.0",
+  "description": "Download helpers for Tsinghua Learn, course reserves, and Cloud share links.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "dev.overlay.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-working-directory": "*"
+  },
+  "scripts": {
+    "setup:dev": "mkdir -p node_modules/@deepseek-ai && ln -sfn ../../../packages/core/tools node_modules/@deepseek-ai/dsh-tools && ln -sfn ../../../packages/credentials/credentials node_modules/@deepseek-ai/dsh-credentials && ln -sfn ../../../packages/session/working-directory node_modules/@deepseek-ai/dsh-working-directory && ln -sfn ../../../vendor/cordis node_modules/@deepseek-ai/cordis",
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json",
+    "check:host": "tsx --tsconfig tsconfig.check.json checks/host-smoke.ts",
+    "check:client": "tsx --tsconfig tsconfig.check.json checks/client-bundle.ts",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run check:host && pnpm run check:client"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "thu-learn-lib": "4.2.6"
+  }
+}

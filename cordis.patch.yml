@@ -1,0 +1,18 @@
+# Bundle patch layer: the row loads this package's main entry as a Host plugin.
+# `package.json` `dsh.client` loads ./client as the browser half.
+# Installed into a profile, the bare package name resolves from that profile's
+# node_modules. Developing from this checkout, use dev.overlay.yml instead.
+- insert:
+    - id: thu
+      name: dsh-thu-plugin
+      config:
+        downloadDir: thu-downloads
+        concurrency: 2
+        timeoutMs: 90000
+        reservesDelayMs: 1500
+        reservesTimeoutMs: 1800000
+        # The campus account lives in the references dsh-thu-automad already
+        # reads, so one entry signs in both plugins. The device fingerprint is
+        # shared the same way, through the `thu-automad/session` record.
+        usernameRef: MADMODEL_USERNAME
+        passwordRef: MADMODEL_PASSWORD

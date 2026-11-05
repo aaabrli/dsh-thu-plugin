@@ -1,0 +1,15 @@
+# Development overlay for this checkout.
+#
+#   pnpm dsh web --patch ./dsh-thu-plugin/dev.overlay.yml
+#
+# The row names the Host entry by absolute path, so the checkout's tsx hook
+# loads src/ directly. The browser half still comes from the built ./client
+# export; rebuild after UI changes and refresh the page.
+- insert:
+    - id: thu
+      name: /Users/Admin/dsh/deepseek-harness/dsh-thu-plugin/src/index.ts
+      config:
+        downloadDir: thu-downloads
+        concurrency: 2
+        timeoutMs: 90000
+        reservesDelayMs: 1500

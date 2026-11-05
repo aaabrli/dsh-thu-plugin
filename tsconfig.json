@@ -1,0 +1,40 @@
+/**
+ * Local typecheck for this out-of-tree plugin. It is not a workspace package,
+ * so it compiles against the checkout's published declaration artifacts.
+ *
+ *   pnpm exec tsc -p dsh-thu-plugin
+ *
+ * `checks/` stays outside this program: those files drive `apply` against a
+ * stub Context, and a stub is not a Context.
+ */
+{
+  "extends": "../tsconfig.base.client.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rewriteRelativeImportExtensions": false,
+    "types": ["node"],
+    "typeRoots": [
+      "../node_modules/.pnpm/node_modules/@types",
+      "../node_modules/@types",
+      "../scripts/types"
+    ],
+    "paths": {
+      "@deepseek-ai/cordis": ["../vendor/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-credentials": ["../packages/credentials/credentials/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-tools": ["../packages/core/tools/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-working-directory": ["../packages/session/working-directory/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-connection": ["../packages/client/connection/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-locale/client": ["../packages/client/locale/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-layout/client": ["../packages/client/ui-layout/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-settings/client": ["../packages/client/ui-settings/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-renderer/client": ["../packages/client/ui-renderer/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-primitives": ["../packages/client/ui-primitives/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": ["../packages/client/ui-slots/lib/types/index.d.ts"]
+    }
+  },
+  "include": ["src", "tsdown.config.ts"]
+}

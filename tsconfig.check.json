@@ -1,0 +1,36 @@
+/**
+ * Runtime resolution for `checks/` — a second config on purpose.
+ *
+ * `tsconfig.json` maps `@deepseek-ai/*` to the published **declaration**
+ * artifacts (`lib/types/*.d.ts`), which is what a typecheck wants: this plugin
+ * is a consumer of the harness, so it is checked against the API surface, not
+ * re-checked against the harness sources under its own stricter flags.
+ *
+ * Those declarations are not loadable at runtime: they use `.ts`-suffixed
+ * specifiers (`./events.ts`) that only exist in the sources. So `tsx` gets this
+ * config instead, which maps the two packages this plugin imports as *values*
+ * to their built JS entry points.
+ *
+ *   tsx --tsconfig tsconfig.check.json checks/host-smoke.ts
+ */
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rewriteRelativeImportExtensions": false,
+    "types": ["node"],
+    "typeRoots": [
+      "../node_modules/.pnpm/node_modules/@types",
+      "../node_modules/@types",
+      "../scripts/types"
+    ],
+    "paths": {
+      "@deepseek-ai/dsh-tools": ["../packages/core/tools/lib/index.js"],
+      "@deepseek-ai/dsh-credentials": ["../packages/credentials/credentials/lib/index.js"]
+    }
+  }
+}
