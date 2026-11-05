@@ -256,3 +256,4 @@ dsh --profile thu --dump-config
 | 测试靠注入的 seam，不靠环境变量 | `fetchPaper(..., seams: { cli, configPath, env })`；`searchPapers(..., { origin })` | 上游 `config.py` 的 `DEFAULT_BASE_DIR` 是硬编码常量、没有 env 覆盖，检查进程也不可能真的往用户家目录写；seam 只给 `checks/` 用，工具调用永远走默认值 |
 | `status.papers.cli` 报路径而不是布尔 | `findPaperCli` 的结果直接给模型，缺失时键不出现 | 模型需要知道「有没有装」，运维需要知道「装的是哪一个」——两种情况同一字段即可，不必再加一个 `path` |
 | 论文加入后工具总数是 10 | 8 + `thu_paper_search` + `thu_paper_fetch`；批量与任务留 M7 | 上面「首版工具 8 个」仍是当时的事实，不改写；这里追加新数，免得后来的人拿旧行当现在的契约 |
+| 依赖不锁 dsh 版本 | 四个 `@deepseek-ai/*` peer 全写 `*` | 兼容性门在 `packages/boot/app-boot/src/plugin-compatibility.ts:51-72`：有 `engines.dsh` 就只看它，否则把每个 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peer 的 range 拿去比**运行时版本**（`getDshRuntimeVersion()` 读 app-boot 的 `package.json`，本机 `0.2.2-alpha.2`），`satisfies` 带 `includePrerelease: true`。写 `^0.2.2-alpha.2` 今天过、dsh 一升到 0.3.x 就判定不兼容、整层被跳过；`*` 两种都过。`cordis` 不在门的名单里，但同属 dsh 工作副本 vendored 的东西，一并放开 |
