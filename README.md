@@ -11,6 +11,8 @@
 
 当前状态：M0、M1、M2、M3、M4 完成（学堂与教参已真机验证；教参仍缺真实 token + 真实书目手测）。八个工具全部注册：`thu_status`、`thu_learn_semesters` / `thu_learn_courses` / `thu_learn_files` / `thu_learn_download`、`thu_reserves_download`、`thu_cloud_list` / `thu_cloud_download`。
 
+
+版本：`package.json` 的 `version` 与 git tag 同步，当前 **0.1.0**（tag `v0.1.0`）。本目录是**独立仓库**，父仓库的 `.git/info/exclude` 里有一行 `dsh-thu-plugin/` 把它挡在 `git add` 之外，两边互不干扰。发版：改 `version` → `git commit` → `git tag -a vX.Y.Z`。
 界面是**设置面板里的一页**（`settings.section`，id `thu`，导航名「清华工具」）：教参 CLI 安装按钮，加上五项凭据的写入（`MADMODEL_USERNAME`、`MADMODEL_PASSWORD`、`THU_LEARN_FINGERPRINT`、`THU_LEARN_COOKIE`、`THU_RESERVES_TOKEN`）。学号与密码和 `dsh-thu-automad` **共用同一对引用**，设备指纹也共用（存在 `thu-automad/session` 记录里，两个插件向学校呈现同一台设备）。凭据只显示「已设置 / 未设置」，从不回显明文；留空保存即清除。教参 CLI 不需要先改配置，按钮默认装到 `~/.dsh/dsh-thu-plugin/reserves/downloader`（本机需要 `unzip`）。同一页还有第二个按钮：安装 [`dsh-thu-automad`](https://github.com/aaabrli/dsh-thu-automad)。它重跑当前安装形态的 CLI（`plugin --profile <p> add <spec>`），由 CLI 自己写依赖并对账 `dsh.profile.bundles`；装完需重启 `dsh web`，失败时面板会显示安装日志（git 源若被 pnpm 的 `allowBuilds` 拦住，日志里写着要加的键）。
 
 真实账号已跑通（2026-2027 秋季学期 7 门课、数值分析A 22 个文件）：`MADMODEL_*` + 共享指纹能登录、能列、能看，**也能下载**——插件在登录那一刻包住全局 `fetch`，把库自己写进内存 jar 的 learn 域 `Set-Cookie` 顺手记下来，再用它去取 `downloadUrl`（实测落到 `%PDF-` 文件，不需要用户提供 cookie）。`THU_LEARN_COOKIE` 只在验证码/二次认证挡住密码登录时才需要，填了就优先用。`checks/learn-live.ts` 是真机探针（不进 `check`）：`THU_TRY_DOWNLOAD=1` 会下载最小的那个文件并打印 magic。
