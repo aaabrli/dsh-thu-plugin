@@ -16,3 +16,14 @@
         # shared the same way, through the `thu-automad/session` record.
         usernameRef: MADMODEL_USERNAME
         passwordRef: MADMODEL_PASSWORD
+        # Paper fetching runs the external instsci CLI. The institution is only
+        # written into that CLI's own config when the file names none, so a
+        # choice made there wins. The gateway table is keyed by the Chinese
+        # name; publisher login pages are matched against the English one.
+        # Empty keeps the workspace layout (`thu-downloads/papers`); a value
+        # moves it, relative to the conversation's workspace or absolute.
+        paperDir: ''
+        paperSchool: 清华大学
+        paperSchoolEn: Tsinghua University
+        paperEmailRef: THU_PAPER_EMAIL
+        paperTimeoutMs: 1200000

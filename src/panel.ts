@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync } from 'node:fs'
-import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -19,6 +19,7 @@ import type { ThuOptions } from './config.ts'
 import { reservesCliPath } from './config.ts'
 import { sharedFingerprint } from './identity.ts'
 import { AUTOMAD_SPEC, automadBundled, automadSpec, currentProfile, installAutomad } from './automad.ts'
+import { findOnPath, findPaperCli } from './papers/fetch.ts'
 
 /** Official release the install button fetches. GPL binary, never vendored. */
 const RESERVES_RELEASE = 'v4.0.1'
@@ -38,6 +39,9 @@ const RESERVES_ASSET: Record<string, string> = {
  *
  * The reserves token is here because the CLI's own login path opens a browser,
  * which a tool call cannot do: the token has to be pasted instead.
+ *
+ * The paper email is not a secret, but it is per-person and the CLI prompts for
+ * it on stdin when it has none, so it is stored the same way as the rest.
  */
 function credentialFields(options: ThuOptions) {
   return [
@@ -46,6 +50,7 @@ function credentialFields(options: ThuOptions) {
     { id: 'fingerprint', ref: credentialRef('THU_LEARN_FINGERPRINT'), secret: true, shared: true },
     { id: 'cookie', ref: credentialRef('THU_LEARN_COOKIE'), secret: true, shared: false },
     { id: 'reserves-token', ref: credentialRef('THU_RESERVES_TOKEN'), secret: true, shared: false },
+    { id: 'paper-email', ref: credentialRef(options.paperEmailRef), secret: false, shared: false },
   ] as const
 }
 
@@ -63,6 +68,7 @@ export interface PanelField {
 export interface PanelSnapshot {
   tools: Array<
     | { id: 'reserves'; installed: boolean; path: string }
+    | { id: 'papers'; installed: boolean; path: string | null }
     | {
       id: 'automad'
       /** The profile whose plugin list the button edits; empty when undetectable. */
@@ -82,6 +88,8 @@ export interface PanelSnapshot {
 export interface InstallTask {
   taskId: string
   state: 'running' | 'done' | 'failed'
+  /** Latest line of progress, for the panel to show while the task runs. */
+  progress?: string
   error?: string
   /** Tail of the CLI output, for the panel to show when something went wrong. */
   log?: string
@@ -126,12 +134,17 @@ export async function readPanel(ctx: Context, options: ThuOptions): Promise<Pane
     }
   }))
   const profile = await currentProfile()
+  const papersCli = await findPaperCli(options)
   const automadInstalled = profile === undefined ? undefined : await automadSpec(profile)
   return {
     tools: [{
       id: 'reserves',
       installed: await reservesInstalled(reservesCliPath(options)),
       path: reservesCliPath(options),
+    }, {
+      id: 'papers',
+      installed: papersCli !== undefined,
+      path: papersCli ?? null,
     }, {
       id: 'automad',
       profile: profile?.name ?? '',
@@ -331,4 +344,201 @@ async function moveFile(from: string, to: string): Promise<void> {
     await copyFile(from, to)
     await chmod(to, 0o755)
   }
+}
+
+/** Upstream project the paper install button fetches. MIT, but a Python app: installed, never imported. */
+const PAPERS_SPEC = 'git+https://github.com/Rimagination/instsci.git'
+/** Python the CLI is installed under: its browser path is 3.10–3.13 only, and 3.14 is the local default. */
+const PAPERS_PYTHON = '3.13'
+/** A first install also downloads a browser runtime, so it gets its own ceiling. */
+const PAPERS_INSTALL_TIMEOUT_MS = 900_000
+/** Official uv builds, published as `<target>.tar.gz` under this prefix. */
+const UV_RELEASE_BASE = 'https://github.com/astral-sh/uv/releases/latest/download'
+/** One archive download; a dead network must not hang the install forever. */
+const UV_TIMEOUT_MS = 300_000
+
+/**
+ * The uv release this machine matches, in uv's own target naming.
+ * @returns e.g. `aarch64-apple-darwin`, or undefined on an unsupported platform.
+ */
+function uvTarget(): string | undefined {
+  const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : undefined
+  const os = process.platform === 'darwin'
+    ? 'apple-darwin'
+    : process.platform === 'linux' ? 'unknown-linux-gnu' : undefined
+  return arch === undefined || os === undefined ? undefined : `${arch}-${os}`
+}
+
+/**
+ * Start installing the paper CLI, installing uv first when neither installer exists.
+ *
+ * `uv tool install` and `pipx install` both drop `instsci` in `~/.local/bin`,
+ * which is where the fetch tool looks after its own install location; a
+ * bootstrapped `uv` lands in that same directory. A bare `pip install` is never
+ * attempted: it would target an interpreter this button cannot identify.
+ * @returns the task; progress and failure are both recorded on it.
+ */
+export async function startPapersInstall(): Promise<InstallTask> {
+  for (const task of tasks.values()) {
+    if (task.state === 'running') return task
+  }
+  const task: InstallTask = { taskId: `papers-${Date.now().toString(36)}`, state: 'running' }
+  tasks.set(task.taskId, task)
+  void runPaperInstall(task)
+  return task
+}
+
+/**
+ * One install: find or bootstrap an installer, then install the CLI.
+ * Never throws.
+ * @param task - task updated in place.
+ */
+async function runPaperInstall(task: InstallTask): Promise<void> {
+  try {
+    let runner = await papersInstaller()
+    if (runner === undefined) {
+      const uv = await bootstrapUv(task)
+      if (uv === undefined) {
+        task.state = 'failed'
+        task.error ??= 'uv could not be installed automatically'
+        return
+      }
+      runner = { name: 'uv', path: uv }
+    }
+    progressOf(task, `installing the paper CLI with ${runner.name}`)
+    // Pinning the interpreter is not cosmetic: on Python 3.14 Playwright's sync
+    // API mis-detects a running loop, CloakBrowser refuses to start, and every
+    // institutional route ends as `auth_required`. uv fetches a matching
+    // interpreter itself, so the pin costs nothing on a machine that lacks it.
+    // `--force` is what makes the pin reachable: an install made by an older
+    // build (or by hand, on another interpreter) otherwise fails the button with
+    // "already installed" and keeps running on the old Python.
+    const argv = runner.name === 'uv'
+      ? ['tool', 'install', '--force', '--python', PAPERS_PYTHON, PAPERS_SPEC]
+      : ['install', '--force', '--python', PAPERS_PYTHON, PAPERS_SPEC]
+    const exit = await runInstaller(runner.path, argv, task)
+    if (exit.timedOut) {
+      task.state = 'failed'
+      task.error = `${runner.name} ran longer than ${String(PAPERS_INSTALL_TIMEOUT_MS / 60_000)} minutes and was stopped`
+      return
+    }
+    if (exit.code !== 0) {
+      task.state = 'failed'
+      task.error = `${runner.name} exited ${String(exit.code ?? 'unknown')}`
+      return
+    }
+    delete task.progress
+    task.state = 'done'
+  } catch (error) {
+    task.state = 'failed'
+    task.error = error instanceof Error ? error.message : String(error)
+  }
+}
+
+/**
+ * The first installer this machine has, preferring `uv`.
+ * @returns installer name and path, or undefined when neither is present.
+ */
+async function papersInstaller(): Promise<{ name: 'uv' | 'pipx'; path: string } | undefined> {
+  for (const name of ['uv', 'pipx'] as const) {
+    for (const directory of [join(homedir(), '.local', 'bin'), join(homedir(), '.cargo', 'bin')]) {
+      const candidate = join(directory, name)
+      if (existsSync(candidate)) return { name, path: candidate }
+    }
+    const fromPath = await findOnPath(name)
+    if (fromPath !== undefined) return { name, path: fromPath }
+  }
+  return undefined
+}
+
+/**
+ * Download the official uv build into `~/.local/bin`.
+ *
+ * The project's shell installer is not piped through `sh`: one archive from the
+ * release page is easier to explain, and the only thing executed afterwards is
+ * the binary this function wrote.
+ * @param task - task whose progress and error are recorded.
+ * @returns the installed path, or undefined with `task.error` set.
+ */
+async function bootstrapUv(task: InstallTask): Promise<string | undefined> {
+  const target = uvTarget()
+  if (target === undefined) {
+    task.error = `no uv build for ${process.platform}/${process.arch}: install uv or pipx by hand`
+    return undefined
+  }
+  const binDir = join(homedir(), '.local', 'bin')
+  const destination = join(binDir, 'uv')
+  const work = await mkdtemp(join(tmpdir(), 'dsh-thu-uv-'))
+  try {
+    const url = `${UV_RELEASE_BASE}/uv-${target}.tar.gz`
+    progressOf(task, `no uv or pipx here yet: downloading uv (${target})`)
+    const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(UV_TIMEOUT_MS) })
+    if (!response.ok) throw new Error(`HTTP ${String(response.status)} from ${url}`)
+    const archive = join(work, 'uv.tar.gz')
+    await writeFile(archive, Buffer.from(await response.arrayBuffer()))
+    const exit = await runInstaller('tar', ['-xzf', archive, '-C', work], task, UV_TIMEOUT_MS)
+    if (exit.code !== 0) throw new Error(`tar exited ${String(exit.code ?? 'unknown')}`)
+    const extracted = join(work, `uv-${target}`, 'uv')
+    if (!existsSync(extracted)) throw new Error(`the archive has no uv-${target}/uv`)
+    await mkdir(binDir, { recursive: true })
+    await moveFile(extracted, destination)
+    await chmod(destination, 0o755)
+    progressOf(task, `installed uv at ${destination}`)
+    return destination
+  } catch (error) {
+    task.error = `uv could not be installed: ${error instanceof Error ? error.message : String(error)}`
+    return undefined
+  } finally {
+    await rm(work, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Record one progress line.
+ * @param task - task being updated.
+ * @param message - what is happening now.
+ */
+function progressOf(task: InstallTask, message: string): void {
+  task.progress = message
+  task.log = `${task.log ?? ''}${message}\n`.slice(-64_000)
+}
+
+/**
+ * Run an installer or helper to completion, keeping the tail of its output on the task.
+ * @param cli - executable.
+ * @param argv - arguments.
+ * @param task - task whose log and progress are updated.
+ * @param timeoutMs - wall clock before the child is stopped.
+ * @returns exit facts; a non-zero exit is not an exception.
+ */
+async function runInstaller(
+  cli: string,
+  argv: readonly string[],
+  task: InstallTask,
+  timeoutMs: number = PAPERS_INSTALL_TIMEOUT_MS,
+): Promise<{ code: number | null; timedOut: boolean }> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(cli, [...argv], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let timedOut = false
+    const capture = (chunk: Buffer): void => {
+      task.log = `${task.log ?? ''}${chunk.toString()}`.slice(-64_000)
+      const line = task.log.split('\n').filter(part => part.trim().length > 0).at(-1)
+      if (line !== undefined && line.length <= 200) task.progress = line.trim()
+    }
+    child.stdout.on('data', capture)
+    child.stderr.on('data', capture)
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), 5_000).unref()
+    }, timeoutMs)
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', (code: number | null) => {
+      clearTimeout(timer)
+      resolve({ code, timedOut })
+    })
+  })
 }

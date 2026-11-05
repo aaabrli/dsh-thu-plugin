@@ -15,6 +15,8 @@ import { join } from 'node:path'
 export interface ThuOptions {
   /** Workspace-relative directory downloads land in. */
   downloadDir: string
+  /** Where paper PDFs go; empty means `<downloadDir>/papers` under the workspace. */
+  paperDir: string
   /** Parallel file fetches for one cloud download. */
   concurrency: number
   /** Per-request timeout, in milliseconds. */
@@ -31,11 +33,22 @@ export interface ThuOptions {
   usernameRef: string
   /** Credential reference holding the unified-auth password; default is the one `dsh-thu-automad` reads. */
   passwordRef: string
+  /** Path to the paper CLI. Empty means "look in the install location, then PATH". */
+  paperCli: string
+  /** Institution the paper CLI should use, filled in only when it has none; the gateway table is keyed by this name. */
+  paperSchool: string
+  /** English institution name for publisher login pages and the CARSI list. */
+  paperSchoolEn: string
+  /** Credential reference holding the email the open-access lookup requires. */
+  paperEmailRef: string
+  /** Wall clock a single paper fetch may take, in milliseconds. */
+  paperTimeoutMs: number
 }
 
 /** Documented defaults, restated in cordis.patch.yml. */
 const DEFAULTS = {
   downloadDir: 'thu-downloads',
+  paperDir: '',
   concurrency: 2,
   timeoutMs: 90_000,
   reservesDelayMs: 1_500,
@@ -44,6 +57,11 @@ const DEFAULTS = {
   reservesTimeoutMs: 1_800_000,
   usernameRef: 'MADMODEL_USERNAME',
   passwordRef: 'MADMODEL_PASSWORD',
+  paperCli: '',
+  paperSchool: '清华大学',
+  paperSchoolEn: 'Tsinghua University',
+  paperEmailRef: 'THU_PAPER_EMAIL',
+  paperTimeoutMs: 1_200_000,
 } as const
 
 /**
@@ -79,12 +97,15 @@ export function resolveOptions(config: unknown): ThuOptions {
   for (const key of Object.keys(record)) {
     if (!(key in DEFAULTS)) throw new Error(`dsh-thu-plugin: unknown config key "${key}"`)
   }
+  const paperDir = text(record, 'paperDir', DEFAULTS.paperDir).trim()
+  if (paperDir.includes('\u0000')) throw new Error('dsh-thu-plugin: paperDir cannot contain a NUL byte')
   const downloadDir = text(record, 'downloadDir', DEFAULTS.downloadDir)
   if (downloadDir.length === 0 || downloadDir.includes('..') || downloadDir.startsWith('/')) {
     throw new Error('dsh-thu-plugin: downloadDir must be a non-empty workspace-relative path')
   }
   return {
     downloadDir,
+    paperDir,
     concurrency: count(record, 'concurrency', DEFAULTS.concurrency, 1, 4),
     timeoutMs: count(record, 'timeoutMs', DEFAULTS.timeoutMs, 1_000, 300_000),
     reservesDelayMs: count(record, 'reservesDelayMs', DEFAULTS.reservesDelayMs, MIN_RESERVES_DELAY_MS, 60_000),
@@ -93,6 +114,11 @@ export function resolveOptions(config: unknown): ThuOptions {
     reservesTokenFile: text(record, 'reservesTokenFile', DEFAULTS.reservesTokenFile),
     usernameRef: ref(record, 'usernameRef', DEFAULTS.usernameRef),
     passwordRef: ref(record, 'passwordRef', DEFAULTS.passwordRef),
+    paperCli: text(record, 'paperCli', DEFAULTS.paperCli),
+    paperSchool: text(record, 'paperSchool', DEFAULTS.paperSchool),
+    paperSchoolEn: text(record, 'paperSchoolEn', DEFAULTS.paperSchoolEn),
+    paperEmailRef: ref(record, 'paperEmailRef', DEFAULTS.paperEmailRef),
+    paperTimeoutMs: count(record, 'paperTimeoutMs', DEFAULTS.paperTimeoutMs, 60_000, 3_600_000),
   }
 }
 

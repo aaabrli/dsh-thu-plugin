@@ -6,7 +6,7 @@
  */
 
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -154,6 +154,28 @@ export function formatBytes(bytes: number): string {
     unit += 1
   }
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
+/**
+ * Pick a file name that does not clobber an earlier download.
+ * @param directory - absolute directory the file lands in.
+ * @param name - desired file name.
+ * @returns the desired path, or `<stem>-<n><ext>` for the first free `n`.
+ */
+export async function freePath(directory: string, name: string): Promise<string> {
+  let candidate = join(directory, name)
+  for (let index = 1; index <= 99; index += 1) {
+    try {
+      await stat(candidate)
+    } catch {
+      return candidate
+    }
+    const dot = name.lastIndexOf('.')
+    const stem = dot > 0 ? name.slice(0, dot) : name
+    const suffix = dot > 0 ? name.slice(dot) : ''
+    candidate = join(directory, `${stem}-${String(index)}${suffix}`)
+  }
+  return candidate
 }
 
 /** Join a root and slash-separated child segments. */

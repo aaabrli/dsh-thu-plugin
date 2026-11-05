@@ -1,7 +1,7 @@
 {
   "name": "dsh-thu-plugin",
-  "version": "0.1.0",
-  "description": "Download helpers for Tsinghua Learn, course reserves, and Cloud share links.",
+  "version": "0.2.0",
+  "description": "DSH plugin: Tsinghua Learn files, course reserves, Cloud share links, and paper PDFs.",
   "type": "module",
   "main": "lib/index.js",
   "types": "src/index.ts",

@@ -27,6 +27,12 @@ export interface FieldView {
 export type ToolView =
   | { id: 'reserves'; installed: boolean; path: string }
   | {
+    id: 'papers'
+    installed: boolean
+    /** Absolute path of the CLI the tools would spawn; null when none is on this machine. */
+    path: string | null
+  }
+  | {
     id: 'automad'
     /** Profile the button installs into; empty when the host could not tell. */
     profile: string
@@ -50,6 +56,8 @@ export interface InstallView {
   state: 'running' | 'done' | 'failed' | 'unknown'
   error?: string
   reason?: string
+  /** Latest progress line while the install runs. */
+  progress?: string
   /** Tail of the installer output, shown when it fails or prints a hint. */
   log?: string
   /** A finished install still needs a host restart before the plugin loads. */
@@ -92,6 +100,19 @@ export async function startAutomadInstall(): Promise<InstallView> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ tool: 'automad' }),
+  })
+  return response.json() as Promise<InstallView>
+}
+
+/**
+ * Start installing the paper CLI (`instsci`) with uv or pipx.
+ * @returns the task view. A 400 carries `no-installer` when neither is present.
+ */
+export async function startPapersInstall(): Promise<InstallView> {
+  const response = await fetch(INSTALL_ROUTE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tool: 'papers' }),
   })
   return response.json() as Promise<InstallView>
 }

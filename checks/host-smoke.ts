@@ -9,11 +9,11 @@
  * is why `CloudRequestOptions` carries an `origin` override.
  */
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   CloudError,
@@ -35,6 +35,17 @@ import {
   FINGERPRINT_PATTERN, SHARED_SESSION_KEY, resolveIdentity, sharedFingerprint,
 } from '../src/identity.ts'
 import { defaultReservesCli, reservesCliPath } from '../src/config.ts'
+import {
+  arxivOf,
+  extractJson,
+  fetchPaper,
+  findOnPath,
+  paperDirectory,
+  paperFileName,
+  pdfProblem,
+  spawnWithDeadline,
+} from '../src/papers/fetch.ts'
+import { searchPapers } from '../src/papers/search.ts'
 
 /** Tool signature the stub registry records. */
 type StubExecute = (
@@ -116,6 +127,8 @@ assert.deepEqual(full.tools.map(tool => tool.name).sort(), [
   'thu_learn_download',
   'thu_learn_files',
   'thu_learn_semesters',
+  'thu_paper_fetch',
+  'thu_paper_search',
   'thu_reserves_download',
   'thu_status',
 ])
@@ -125,10 +138,12 @@ const agent = {}
 const exec = { signal, agent }
 
 const status = await full.tools.find(tool => tool.name === 'thu_status')?.execute({}, exec)
-assert.deepEqual(status, {
-  learn: { credential: true, session: false, sharedFingerprint: false },
-  reserves: { cli: false, token: false },
-})
+assert.deepEqual(status?.learn, { credential: true, session: false, sharedFingerprint: false })
+assert.deepEqual(status?.reserves, { cli: false, token: false })
+// The paper row reports this machine's own state, so only the credential fact is fixed.
+const papersStatus = status?.papers as { cli?: string; email: boolean; school?: string }
+assert.equal(papersStatus.email, false)
+assert.equal(papersStatus.cli === undefined || typeof papersStatus.cli === 'string', true)
 
 const listTool = full.tools.find(tool => tool.name === 'thu_cloud_list')
 const badList = await listTool?.execute({ url: 'https://example.com/d/abc12345/' }, exec)
@@ -231,7 +246,23 @@ const credCtx = {
       }),
   },
 } as unknown as import('@deepseek-ai/cordis').Context
-const bare = { downloadDir: 'thu-downloads', concurrency: 2, timeoutMs: 90_000, reservesDelayMs: 1_500, reservesCli: '', reservesTokenFile: '', reservesTimeoutMs: 1_800_000, usernameRef: 'MADMODEL_USERNAME', passwordRef: 'MADMODEL_PASSWORD' }
+const bare = {
+  downloadDir: 'thu-downloads',
+  concurrency: 2,
+  timeoutMs: 90_000,
+  reservesDelayMs: 1_500,
+  reservesCli: '',
+  reservesTokenFile: '',
+  reservesTimeoutMs: 1_800_000,
+  usernameRef: 'MADMODEL_USERNAME',
+  passwordRef: 'MADMODEL_PASSWORD',
+  paperCli: '',
+  paperDir: '',
+  paperSchool: '清华大学',
+  paperSchoolEn: 'Tsinghua University',
+  paperEmailRef: 'THU_PAPER_EMAIL',
+  paperTimeoutMs: 1_200_000,
+}
 const saved = await writeCredential(credCtx, bare, 'password', 'secret-value')
 assert.equal(saved.ok, true)
 assert.equal(stored.get('MADMODEL_PASSWORD'), 'secret-value')
@@ -247,9 +278,10 @@ assert.equal(reservesCliPath({ ...bare, reservesCli: '/opt/x/downloader' }), '/o
 assert.equal(readInstall('missing'), undefined)
 
 const snapshot = await readPanel(credCtx, bare)
-assert.deepEqual(snapshot.fields.map(field => field.id), ['username', 'password', 'fingerprint', 'cookie', 'reserves-token'])
+assert.deepEqual(snapshot.fields.map(field => field.id), ['username', 'password', 'fingerprint', 'cookie', 'reserves-token', 'paper-email'])
 assert.equal(snapshot.fields.every(field => field.writable && !field.configured), true)
 assert.equal(snapshot.tools[0]?.path, defaultReservesCli())
+assert.deepEqual(snapshot.tools.map(tool => tool.id), ['reserves', 'papers', 'automad'])
 const automadRow = snapshot.tools.find(tool => tool.id === 'automad')
 assert.ok(automadRow !== undefined && automadRow.id === 'automad', 'the panel reports the automad row')
 assert.equal(automadRow.spec, AUTOMAD_SPEC)
@@ -394,6 +426,318 @@ const tokenFile = join(reservesWork, 'token-from-file.txt')
 await writeFile(tokenFile, `${jwt({ exp: futureExp })}\n`, { mode: 0o600 })
 const fromFile = await reservesCall({ reservesCli: fakeCli, reservesTokenFile: tokenFile }, {}, { url: BOOK_URL_OK })
 assert.equal(fromFile.ok, true, 'reservesTokenFile is a fallback for the credential')
+
+// ---------------------------------------------------------------------------
+// Paper fetching through a fake instsci CLI
+// ---------------------------------------------------------------------------
+
+const papersWork = join(work, 'papers-run')
+await mkdir(papersWork, { recursive: true })
+const fakeInstsci = join(papersWork, 'instsci')
+await writeFile(fakeInstsci, [
+  '#!/bin/sh',
+  'id=""',
+  'out=""',
+  'while [ $# -gt 0 ]; do',
+  '  case "$1" in',
+  '    fetch) id="$2"; shift 2 ;;',
+  '    --output) out="$2"; shift 2 ;;',
+  '    *) shift ;;',
+  '  esac',
+  'done',
+  'if [ "$COLUMNS" != "100000" ] || [ "$NO_COLOR" != "1" ]; then',
+  '  echo "unexpected terminal env: COLUMNS=$COLUMNS NO_COLOR=$NO_COLOR" >&2',
+  '  exit 7',
+  'fi',
+  'safe=$(printf "%s" "$id" | tr "/:" "__")',
+  'echo "Fetching: $id"',
+  'case "$FAKE_MODE" in',
+  '  sleep) sleep 5; exit 0 ;;',
+  '  exitnz) echo "boom" >&2; exit 3 ;;',
+  '  broken) echo "Traceback (most recent call last):"; exit 0 ;;',
+  'esac',
+  'if [ "$FAKE_MODE" = "nopdf" ]; then',
+  '  cat <<NOJSON',
+  '{',
+  '  "status": "failed",',
+  '  "quality": "none",',
+  '  "reason": "no_open_access_pdf",',
+  '  "next_action": { "message": "Try the browser route" }',
+  '}',
+  'NOJSON',
+  '  exit 0',
+  'fi',
+  'path="$out/$safe.pdf"',
+  'case "$FAKE_MODE" in',
+  '  small) printf "%%PDF-1.4 tiny" > "$path" ;;',
+  '  html) printf "<!doctype html><html>login</html>" > "$path" ;;',
+  '  *)',
+  '    {',
+  '      printf "%%PDF-1.4\\n"',
+  '      i=0',
+  '      while [ $i -lt 400 ]; do printf "padding line %s\\n" "$i"; i=$((i+1)); done',
+  '      printf "%%%%EOF\\n"',
+  '    } > "$path" ;;',
+  'esac',
+  'cat <<EOF',
+  '{',
+  '  "status": "success",',
+  '  "quality": "text_and_pdf",',
+  '  "reason": "",',
+  '  "paper": {',
+  '    "doi": "$id",',
+  '    "title": "A fake paper",',
+  '    "source": "open_access",',
+  '    "pdf_path": "$path"',
+  '  }',
+  '}',
+  'EOF',
+  'echo "PDF saved to: $path"',
+  'echo "Source: open_access"',
+].join('\n'), { mode: 0o755 })
+
+const papersConfig = join(work, 'instsci-config.json')
+
+/** Seams that keep the run away from the real `~/.instsci/config.json`. */
+function paperSeams(mode: string, configPath: string = papersConfig): {
+  cli: string
+  configPath: string
+  env: NodeJS.ProcessEnv
+} {
+  return { cli: fakeInstsci, configPath, env: { ...process.env, FAKE_MODE: mode } }
+}
+
+const papersWithEmail = (): Context => harness({}, work, { THU_PAPER_EMAIL: 'me@example.com' }).ctx
+
+/** Drive the paper tool through the real `apply` with one config. */
+async function papersCall(
+  config: unknown,
+  secrets: Record<string, string>,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const local = harness({}, papersWork, secrets)
+  apply(local.ctx, config)
+  const tool = local.tools.find(item => item.name === 'thu_paper_fetch')
+  assert.ok(tool !== undefined, 'the paper tool registers')
+  try {
+    return await tool.execute(args, exec)
+  } finally {
+    local.dispose()
+  }
+}
+
+const noEmail = await fetchPaper(harness({}, work).ctx, { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('default'))
+assert.equal(noEmail.ok, false)
+assert.equal(noEmail.ok ? '' : noEmail.reason, 'missing-credential', 'the email is a hard precondition')
+
+const fetched = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('default'))
+assert.ok(fetched.ok, `a successful fetch reports ok: ${JSON.stringify(fetched)}`)
+assert.equal(fetched.path, join(work, 'thu-downloads', 'papers', '10.5555_fake.paper.pdf'))
+assert.equal(fetched.title, 'A fake paper')
+assert.equal(fetched.status, 'success')
+assert.ok((fetched.bytes ?? 0) > 5_000, 'the whole PDF is copied out, not the CLI text')
+
+const writtenConfig = JSON.parse(await readFile(papersConfig, 'utf8')) as {
+  email: string
+  school: string
+  institution_name_zh: string
+  institution_name_en: string
+  carsi_idp_name: string
+}
+assert.equal(writtenConfig.email, 'me@example.com', 'the credential email reaches the CLI config')
+assert.equal(writtenConfig.school, '清华大学', 'the campus gateway table is keyed by the Chinese name')
+assert.equal(writtenConfig.institution_name_zh, '清华大学', 'the login pages get the local name too')
+assert.equal(writtenConfig.institution_name_en, 'Tsinghua University', 'publisher login pages are matched against the English name')
+assert.equal(writtenConfig.carsi_idp_name, 'Tsinghua University', 'the CARSI list is searched with the English name')
+assert.equal(((await stat(papersConfig)).mode & 0o777), 0o600, 'the CLI config is private')
+
+const second = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('default'))
+assert.ok(second.ok)
+assert.equal(second.path, join(work, 'thu-downloads', 'papers', '10.5555_fake.paper-1.pdf'), 'a second run does not clobber the first')
+
+const replaced = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper', overwrite: true }, signal, paperSeams('default'))
+assert.ok(replaced.ok)
+assert.equal(replaced.path, join(work, 'thu-downloads', 'papers', '10.5555_fake.paper.pdf'), 'overwrite keeps the name')
+
+const doiPdf = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.1234/test.1' }, signal, paperSeams('default'))
+assert.ok(doiPdf.ok)
+assert.equal(doiPdf.path, join(work, 'thu-downloads', 'papers', '10.1234_test.1.pdf'), 'a DOI is made filesystem safe')
+
+const keptConfig = join(work, 'instsci-kept.json')
+await writeFile(keptConfig, JSON.stringify({ school: '北京大学', email: 'other@example.com' }))
+const kept = await fetchPaper(harness({}, work).ctx, { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('default', keptConfig))
+assert.ok(kept.ok)
+const keptWritten = JSON.parse(await readFile(keptConfig, 'utf8')) as { school: string; email: string; carsi_idp_name: string }
+assert.equal(keptWritten.school, '北京大学', 'an institution already on disk wins over the default')
+assert.equal(keptWritten.email, 'other@example.com', 'an address already on disk is kept')
+assert.equal(keptWritten.carsi_idp_name, 'Tsinghua University', 'a name the file does not carry is still filled in')
+
+const smallPdf = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('small'))
+assert.equal(smallPdf.ok ? '' : smallPdf.reason, 'invalid-pdf')
+
+const htmlPdf = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('html'))
+assert.equal(htmlPdf.ok ? '' : htmlPdf.reason, 'invalid-pdf')
+
+const broken = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('broken'))
+assert.equal(broken.ok ? '' : broken.reason, 'unparseable-output')
+
+const exitNonZero = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('exitnz'))
+assert.equal(exitNonZero.ok ? '' : exitNonZero.reason, 'exit-nonzero')
+assert.ok((exitNonZero.ok ? '' : exitNonZero.log ?? '').includes('boom'), 'the CLI tail reaches the failure')
+
+const noPdfPath = await fetchPaper(papersWithEmail(), { ...bare }, work, { identifier: '10.5555/fake.paper' }, signal, paperSeams('nopdf'))
+assert.equal(noPdfPath.ok ? '' : noPdfPath.reason, 'no-pdf')
+assert.ok((noPdfPath.ok ? '' : noPdfPath.message).includes('Try the browser route'), 'the CLI next step is relayed')
+
+const missingCli = await papersCall({ paperCli: join(work, 'nope', 'instsci') }, { THU_PAPER_EMAIL: 'me@example.com' }, { identifier: '10.5555/fake.paper' })
+assert.equal(missingCli.reason, 'cli-missing', 'an unset path is reported, not silently skipped')
+
+const slowCli = paperSeams('sleep')
+const hung = await spawnWithDeadline(fakeInstsci, ['fetch', 'x'], { cwd: papersWork, env: { ...slowCli.env, COLUMNS: '100000', NO_COLOR: '1' }, timeoutMs: 300, signal })
+assert.equal(hung.timedOut, true, 'a deadline stops the child')
+
+const controller = new AbortController()
+const pendingKill = spawnWithDeadline(fakeInstsci, ['fetch', 'x'], { cwd: papersWork, env: { ...slowCli.env, COLUMNS: '100000', NO_COLOR: '1' }, timeoutMs: 60_000, signal: controller.signal })
+setTimeout(() => { controller.abort() }, 200)
+assert.equal((await pendingKill).cancelled, true, 'cancellation stops the child')
+
+assert.equal(extractJson('Fetching: 1\n{\n  "a": 1\n}\nPDF saved to: x'), '{\n  "a": 1\n}')
+assert.equal(extractJson('no json here'), undefined)
+const pdfBytes = (body: string): Uint8Array => new TextEncoder().encode(body)
+assert.equal(pdfProblem(new Uint8Array()), 'empty')
+assert.equal(pdfProblem(pdfBytes('<html>hi</html>')), 'html_response')
+assert.equal(pdfProblem(pdfBytes('%PDF-1.4 tiny')), 'too_small')
+assert.equal(pdfProblem(pdfBytes('x'.repeat(6_000))), 'missing_pdf_header')
+assert.equal(pdfProblem(pdfBytes(`%PDF-1.4\n${'x'.repeat(6_000)}\n%%EOF\n`)), undefined)
+assert.equal(pdfProblem(pdfBytes(`%PDF-1.4\n\uFFFD${'x'.repeat(6_000)}\n%%EOF\n`)), 'corrupt_pdf_header')
+assert.equal(pdfProblem(pdfBytes(`%PDF-1.4\n${'x'.repeat(100)}%%EOF\n${'y'.repeat(9_000)}`)), 'early_eof_with_trailing_payload')
+assert.equal(paperFileName('10.1103/PhysRevLett.116.061102', null), '10.1103_PhysRevLett.116.061102.pdf')
+assert.equal(paperFileName(null, '2401.01234'), '2401.01234.pdf')
+assert.equal(paperFileName('', null), 'paper.pdf')
+assert.equal(arxivOf('arXiv:2401.01234v2'), '2401.01234')
+assert.equal(arxivOf('https://arxiv.org/abs/2401.01234'), '2401.01234')
+assert.equal(arxivOf('10.1103/PhysRevLett.116.061102'), null)
+assert.equal(await findOnPath('this-program-does-not-exist-xyz', { PATH: papersWork }), undefined)
+
+let flakyHits = 0
+const arxivServer = createServer((request, response) => {
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+  if (url.pathname === '/pdf/2404.00001') {
+    flakyHits += 1
+    if (flakyHits === 1) {
+      // A proxy blip: the first connection dies mid-handshake.
+      request.socket.destroy()
+      return
+    }
+    const body = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(6_000, 0x20), Buffer.from('\n%%EOF\n')])
+    response.writeHead(200, { 'content-type': 'application/pdf' }).end(body)
+    return
+  }
+  if (url.pathname === '/pdf/2401.01234') {
+    const body = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(6_000, 0x20), Buffer.from('\n%%EOF\n')])
+    response.writeHead(200, { 'content-type': 'application/pdf' }).end(body)
+    return
+  }
+  if (url.pathname === '/pdf/2402.00001') {
+    response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html>login</html>')
+    return
+  }
+  response.writeHead(404).end()
+})
+await new Promise<void>(resolve => { arxivServer.listen(0, '127.0.0.1', resolve) })
+const arxivOrigin = `http://127.0.0.1:${String((arxivServer.address() as AddressInfo).port)}`
+
+try {
+  // No CLI at all: the arXiv route must stand on its own.
+  const noCli = { ...bare, paperCli: '/nonexistent/instsci' }
+  const fromId = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: '2401.01234' }, signal, { arxivOrigin })
+  assert.ok(fromId.ok, `a bare arXiv id is fetched without the CLI: ${JSON.stringify(fromId)}`)
+  assert.equal(fromId.path, join(work, 'thu-downloads', 'papers', '2401.01234.pdf'))
+  assert.equal(fromId.source, 'arxiv')
+  assert.equal(fromId.quality, 'pdf_only', 'no text extraction happens on the direct route')
+  assert.ok((fromId.bytes ?? 0) > 5_000)
+
+  const versioned = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: 'arXiv:2401.01234v2' }, signal, { arxivOrigin })
+  assert.ok(versioned.ok)
+  assert.equal(versioned.arxivId, '2401.01234', 'a version suffix is stripped from the id')
+  assert.equal(versioned.path, join(work, 'thu-downloads', 'papers', '2401.01234-1.pdf'), 'the same paper keeps a second name')
+  assert.equal(versioned.title, 'arXiv 2401.01234')
+
+  const overwritten = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: 'https://arxiv.org/abs/2401.01234', overwrite: true }, signal, { arxivOrigin })
+  assert.ok(overwritten.ok)
+  assert.equal(overwritten.path, join(work, 'thu-downloads', 'papers', '2401.01234.pdf'), 'overwrite keeps the name')
+
+  const wrongBytes = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: '2402.00001' }, signal, { arxivOrigin })
+  assert.equal(wrongBytes.ok ? '' : wrongBytes.reason, 'invalid-pdf', 'a login page is not saved as a paper')
+
+  const missing = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: '2403.99999' }, signal, { arxivOrigin })
+  assert.equal(missing.ok ? '' : missing.reason, 'exit-nonzero', 'a 404 from arXiv is reported as such')
+
+  const relative = await fetchPaper(harness({}, work).ctx, { ...noCli, paperDir: 'papers-out' }, work, { identifier: '2401.01234' }, signal, { arxivOrigin })
+  assert.ok(relative.ok, `a relative paperDir is honoured: ${JSON.stringify(relative)}`)
+  assert.equal(relative.path, join(work, 'papers-out', '2401.01234.pdf'), 'a relative paperDir counts from the workspace')
+
+  const elsewhere = await mkdtemp(join(tmpdir(), 'thu-papers-dir-'))
+  const absolute = await fetchPaper(harness({}, work).ctx, { ...noCli, paperDir: elsewhere }, work, { identifier: '2401.01234' }, signal, { arxivOrigin })
+  assert.ok(absolute.ok)
+  assert.equal(dirname(absolute.path), elsewhere, 'an absolute paperDir is used as written')
+  await rm(elsewhere, { recursive: true, force: true })
+
+  const retried = await fetchPaper(harness({}, work).ctx, noCli, work, { identifier: '2404.00001' }, signal, { arxivOrigin })
+  assert.ok(retried.ok, `a reset connection is retried once: ${JSON.stringify(retried)}`)
+  assert.equal(flakyHits, 2, 'exactly one retry')
+
+  assert.equal(paperDirectory(work, { ...bare, paperDir: '' }), join(work, 'thu-downloads', 'papers'))
+  assert.equal(paperDirectory(work, { ...bare, paperDir: '~/Papers' }), join(homedir(), 'Papers'))
+  assert.equal(paperDirectory(work, { ...bare, paperDir: '/tmp/lit' }), '/tmp/lit')
+} finally {
+  arxivServer.close()
+}
+
+const searchServer = createServer((request, response) => {
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+  if (url.pathname !== '/graph/v1/paper/search') {
+    response.writeHead(404).end()
+    return
+  }
+  const query = url.searchParams.get('query') ?? ''
+  if (query === 'rate') {
+    response.writeHead(429, { 'retry-after': '7' }).end('{}')
+    return
+  }
+  if (query === 'bad') {
+    response.writeHead(400).end('{}')
+    return
+  }
+  response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+    total: 2,
+    data: [
+      { title: 'Hits', authors: [{ name: 'A' }, { name: 'B' }], year: 2020, venue: 'J', externalIds: { DOI: '10.1/x' }, citationCount: 5, abstract: 'abs', url: 'https://x' },
+      { authors: [] },
+    ],
+  }))
+})
+await new Promise<void>(resolve => { searchServer.listen(0, '127.0.0.1', resolve) })
+const searchOrigin = `http://127.0.0.1:${String((searchServer.address() as AddressInfo).port)}`
+
+try {
+  const hits = await searchPapers({ query: 'kv cache', limit: 5 }, { timeoutMs: 5_000, signal, origin: searchOrigin })
+  assert.ok(hits.ok, 'a 200 response maps to hits')
+  assert.equal(hits.results.length, 1, 'a record without a title is dropped')
+  assert.equal(hits.results[0]?.doi, '10.1/x')
+  assert.deepEqual(hits.results[0]?.authors, ['A', 'B'])
+
+  const limited = await searchPapers({ query: 'rate', limit: 5 }, { timeoutMs: 5_000, signal, origin: searchOrigin })
+  assert.ok(!limited.ok)
+  assert.equal(limited.reason, 'rate-limited')
+  assert.equal(limited.retryAfterSec, 7, 'the retry hint is read from the header')
+
+  const rejected = await searchPapers({ query: 'bad', limit: 5 }, { timeoutMs: 5_000, signal, origin: searchOrigin })
+  assert.ok(!rejected.ok)
+  assert.equal(rejected.reason, 'bad-request')
+} finally {
+  await new Promise<void>(resolve => { searchServer.close(() => resolve()) })
+}
 
 // ---------------------------------------------------------------------------
 // Cloud client against a loopback Seafile stand-in

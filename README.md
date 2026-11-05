@@ -1,34 +1,113 @@
-# dsh-thu-plugin
+# 清华工具
 
-清华学生资源获取的 DSH 插件。把 thu.services 上已有的工具接成会话里的 DSH 工具。面板上的按钮只负责把不能打进包的外部 CLI 装到本机，不下载课程文件。
+在 DSH 里用中文说一句话，就能下课件、下教材、搜论文、下论文。
 
-范围：网络学堂文件下载、教参教材下载、清华云盘共享链接批量下载。
+这个插件把清华学生常用的几个资源入口接进对话：网络学堂、教参教材、清华云盘共享链接、学术论文 PDF。你不用记命令，直接说「把数值分析A 的课件都下了」「找几篇 KV cache 压缩的论文」「帮我把这篇的 PDF 取下来」。
 
-- [PLAN.md](PLAN.md) — 目标、硬边界、目录结构、UI 设计、里程碑、风险、决策记录。
-- [TOOLS.md](TOOLS.md) — 每个工具的契约：参数、返回、失败方式、所需凭据；面板路由契约。
+当前版本 **0.2.0**（变更见 [doc/CHANGELOG.md](doc/CHANGELOG.md)）。
 
-位置：仓库根的 `dsh-thu-plugin/`，**不迁入 `local-plugins/`**（已定，见 [PLAN.md §9](PLAN.md#9-决策记录)）。
+## 能做什么
 
-当前状态：M0、M1、M2、M3、M4 完成（学堂与教参已真机验证；教参仍缺真实 token + 真实书目手测）。八个工具全部注册：`thu_status`、`thu_learn_semesters` / `thu_learn_courses` / `thu_learn_files` / `thu_learn_download`、`thu_reserves_download`、`thu_cloud_list` / `thu_cloud_download`。
+| 你想做的事 | 你可以这样说 | 背后 |
+| --- | --- | --- |
+| 看这学期有哪些课 | 「我这学期有哪些课？」 | `thu_learn_semesters` |
+| 看某门课有哪些文件 | 「数值分析A 都有什么文件？」 | `thu_learn_courses` / `thu_learn_files` |
+| 下课件 | 「把数值分析A 的课件都下下来」 | `thu_learn_download` |
+| 下教参教材 | 「下载高等数学的教材」 | `thu_reserves_download` |
+| 搜论文 | 「找几篇 KV cache 压缩的论文」 | `thu_paper_search` |
+| 下论文 PDF | 「把这篇的 PDF 取下来」 | `thu_paper_fetch` |
+| 云盘共享链接 | 「把这个共享链接里的文件全下了」 | `thu_cloud_list` / `thu_cloud_download` |
+| 看配置齐不齐 | 「清华工具现在能用吗？」 | `thu_status` |
 
+一共十个工具，逐个契约见 [doc/TOOLS.md](doc/TOOLS.md)。
 
-版本：`package.json` 的 `version` 与 git tag 同步，当前 **0.1.0**（tag `v0.1.0`）。本目录是**独立仓库**，父仓库的 `.git/info/exclude` 里有一行 `dsh-thu-plugin/` 把它挡在 `git add` 之外，两边互不干扰。发版：改 `version` → `git commit` → `git tag -a vX.Y.Z`。
-界面是**设置面板里的一页**（`settings.section`，id `thu`，导航名「清华工具」）：教参 CLI 安装按钮，加上五项凭据的写入（`MADMODEL_USERNAME`、`MADMODEL_PASSWORD`、`THU_LEARN_FINGERPRINT`、`THU_LEARN_COOKIE`、`THU_RESERVES_TOKEN`）。学号与密码和 `dsh-thu-automad` **共用同一对引用**，设备指纹也共用（存在 `thu-automad/session` 记录里，两个插件向学校呈现同一台设备）。凭据只显示「已设置 / 未设置」，从不回显明文；留空保存即清除。教参 CLI 不需要先改配置，按钮默认装到 `~/.dsh/dsh-thu-plugin/reserves/downloader`（本机需要 `unzip`）。同一页还有第二个按钮：安装 [`dsh-thu-automad`](https://github.com/aaabrli/dsh-thu-automad)。它重跑当前安装形态的 CLI（`plugin --profile <p> add <spec>`），由 CLI 自己写依赖并对账 `dsh.profile.bundles`；装完需重启 `dsh web`，失败时面板会显示安装日志（git 源若被 pnpm 的 `allowBuilds` 拦住，日志里写着要加的键）。
+## 安装
 
-真实账号已跑通（2026-2027 秋季学期 7 门课、数值分析A 22 个文件）：`MADMODEL_*` + 共享指纹能登录、能列、能看，**也能下载**——插件在登录那一刻包住全局 `fetch`，把库自己写进内存 jar 的 learn 域 `Set-Cookie` 顺手记下来，再用它去取 `downloadUrl`（实测落到 `%PDF-` 文件，不需要用户提供 cookie）。`THU_LEARN_COOKIE` 只在验证码/二次认证挡住密码登录时才需要，填了就优先用。`checks/learn-live.ts` 是真机探针（不进 `check`）：`THU_TRY_DOWNLOAD=1` 会下载最小的那个文件并打印 magic。
+插件的发布形态还没有远端仓库，所以目前有两种装法：
 
-教参 token 怎么拿：浏览器登录 <https://ereserves.lib.tsinghua.edu.cn>，控制台执行 `localStorage.License`，把值粘进设置页的 `THU_RESERVES_TOKEN`。它是 JWT，约 1 小时过期；插件会先本地看 `exp`，过期直接提示重填，不会去起浏览器的登录流程。
+- **装进你的 profile**：把本目录加进去，然后重启 `dsh web`。
+  `dsh plugin --profile <profile 名> add <本目录绝对路径>`
+- **只在本机开发调试**：用本目录的 `dev.overlay.yml` 起一个只加载这个插件的 Host，
+  见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)。
 
-配置项（`cordis.patch.yml` 里有默认值）：`downloadDir`（默认 `thu-downloads`，相对注入的工作目录）、`concurrency`（默认 2）、`timeoutMs`（默认 90 秒）、`reservesDelayMs`（默认 1500，下限 1000）、`reservesTimeoutMs`（默认 30 分钟）、`reservesCli`（空则用上面的默认安装路径）、`reservesTokenFile`（可选，覆盖凭据的 `token.txt` 路径）、`usernameRef` / `passwordRef`（默认 `MADMODEL_USERNAME` / `MADMODEL_PASSWORD`，即与 `dsh-thu-automad` 共用的那对引用）。
+装好并重启后，设置页里会多出一页「清华工具」。
 
-真实教参 token、真实共享链接仍待手测。剩余 M5：错误文案、示例配置、i18n 补齐。
+## 第一次用：填三样东西
 
-开发命令（在本目录内）：
+打开 **设置 → 清华工具**，凭据只显示「已设置 / 未设置」，不会回显明文，留空保存即清除。
+
+| 要填的 | 干什么用 | 去哪拿 |
+| --- | --- | --- |
+| 学号 + 密码 | 登录网络学堂 | 就是你的校园账号；与 `dsh-thu-automad` 共用同一对引用，填一次两边都能用 |
+| 教参 token | 下教参教材 | 浏览器登录 <https://ereserves.lib.tsinghua.edu.cn>，控制台执行 `localStorage.License`，把值粘进来（JWT，约 1 小时过期，过期后重新粘） |
+| 论文邮箱 | 下论文 PDF | 你常用的邮箱即可。Unpaywall 要求真实地址来识别请求方 |
+
+同一页还有一个设备指纹与小工具按钮，正常用不到，说明在 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)。
+
+## 论文获取怎么用
+
+这是最绕的一块，单独说清楚。
+
+**先搜后取。** 先让模型搜，拿到论文的 DOI 或 arXiv id，再让它取 PDF。两条指令可以合成一句：「找两篇关于长文本推理的论文，把第一篇下下来」。
+
+**arXiv 不需要装任何东西。** 认出 arXiv id（比如 `1706.03762`）或 arXiv 链接时，插件自己从 `https://arxiv.org/pdf/<id>` 取，实测 0.9 秒、2.1 MB。这条路不起本地进程、不需要登录。
+
+**其他论文要一个本机 CLI。** 开放获取的论文（PLoS、PNAS 等）靠它查 Unpaywall 直接拿 PDF；订阅论文靠它在**你本机弹一个浏览器窗口**，你在这个窗口里完成学校统一身份认证，它再把 PDF 交回来。插件不代填密码，也不碰你的登录态。
+
+**装 CLI 是第一步，按钮一键装。** 设置页「论文获取」那一行的按钮会：
+
+1. 先看本机有没有 `uv` 或 `pipx`；
+2. 都没有就从 GitHub 取官方 `uv` 放到 `~/.local/bin/uv`；
+3. 用它在 **Python 3.13** 上装 `instsci` 到 `~/.local/bin/instsci`，面板显示当前进行到哪一步。
+
+固定 3.13 不是洁癖：上游的浏览器路线在 3.14 上起不来，闭源论文会全部失败。第一次真去取闭源论文时，它还会自己下浏览器内核（几百 MB），不在按钮里，按需发生。
+
+**要等的时候会等。** 闭源论文最长等 20 分钟（`paperTimeoutMs`），因为要等你在那个窗口里点完登录。同一时刻只取一篇，两个窗口会互相踩 cookie。
+
+**文件落在哪。** 默认 `<对话的工作区>/thu-downloads/papers/<DOI 或 arXiv id>.pdf`；重名不覆盖，自动加 `-1`。想改目录就配 `paperDir`（相对路径从工作区算，也可以写绝对路径或 `~/Papers`）。落盘前会校验字节：`%PDF-` 开头、大于 5000 字节、结尾正常——拿到的是登录页或半截文件时不会假装成功。
+
+## 文件都下到哪
+
+默认都在这一个目录里，按来源分子目录：
 
 ```
-pnpm run setup:dev   # 把 harness 的包链进 node_modules（一次性）
-pnpm run check       # typecheck + build + host-smoke + client-bundle
+thu-downloads/
+├── learn/<课程 id>/          课件与课程文件
+├── reserves/<书目 id>/       教参教材
+├── <共享链接 key>/           云盘文件
+└── papers/                  论文 PDF
 ```
 
+目录名可用配置项 `downloadDir` 改（默认 `thu-downloads`，必须写工作区内的相对路径）。
 
-一句话边界：插件是适配层，不重写爬虫、不代填密码、不分发 GPL 依赖的源码。不含 GPA 计算（已移出范围）。
+## 常见问题
+
+**论文搜索报「被限流」。** Semantic Scholar 不登录时按 IP 限流，`rate-limited` 是它的正常反应。等几十秒再搜，或换个更窄的关键词。
+
+**论文取不回来，说「没有 PDF」。** 这条路先从 Unpaywall 找开放获取的 PDF 链接，找不到就退到网页正文。有些期刊确实没给 PDF 链接，或者这篇需要机构权限又没在校内网。换用浏览器窗口那条路（同一工具会自动走）。
+
+**拿到的是 HTML。** 通常是登录页。插件会拦下来报 `invalid-pdf`，不会把网页存成 `.pdf`。
+
+**教参提示 token 过期。** JWT 只有约 1 小时，重新从 `localStorage.License` 粘一次。
+
+**学堂下载不到文件。** 如果账号被验证码或二次认证挡住，先在浏览器登录一次，把 cookie 填进 `THU_LEARN_COOKIE`。
+
+**下载器装不上。** 教参 CLI 的解包依赖本机有 `unzip`；论文 CLI 的安装依赖能访问 GitHub（下 `uv`）与 PyPI（下依赖）。面板会显示失败原因。
+
+## 边界
+
+- 只做**你自己有权限**的资源：用的是你的账号、以你的身份请求。遵守学校的资源使用规定与期刊订阅条款。
+- 插件不改 DSH 的循环，只提供工具；面板上的按钮直接发请求，不经过模型。
+- 论文的获取路线全部交给外部项目 [`instsci`](https://github.com/Rimagination/instsci)（MIT），插件只负责装它、调它、验它的产物。唯一例外是 arXiv，理由见 [doc/PLAN.md §9](doc/PLAN.md#9-决策记录)。
+- 真机验证状态：学堂（真实账号 7 门课）、云盘、论文（开放获取与 arXiv 已取到 PDF）已跑通；教参仍待真实 token + 真实书目，闭源论文仍待完整走一次浏览器登录。
+
+## 文档
+
+| 文件 | 内容 |
+| --- | --- |
+| [doc/TOOLS.md](doc/TOOLS.md) | 十个工具的参数、返回、失败方式、所需凭据；面板路由契约 |
+| [doc/PLAN.md](doc/PLAN.md) | 目标与硬边界、目录结构、UI 设计、里程碑、风险、决策记录 |
+| [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) | 实现细节、面板设计、真机验证记录、踩过的坑 |
+| [doc/CHANGELOG.md](doc/CHANGELOG.md) | 版本变更 |
+
+发版约定：改 `package.json` 的 `version` → 更新 `doc/CHANGELOG.md` → `git commit` → `git tag -a vX.Y.Z`。

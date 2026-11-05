@@ -18,6 +18,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { CloudReason } from './cloud.ts'
 import { CloudError, downloadShareFiles, listDirectory, parseShareTarget } from './cloud.ts'
 import { resolveOptions } from './config.ts'
+import type { ThuOptions } from './config.ts'
 import { downloadRoot, formatBytes, joinUnder } from './download.ts'
 import type { LearnReason } from './learn.ts'
 import { isLearnFailure, openLearnSession } from './learn.ts'
@@ -26,8 +27,12 @@ import {
   readPanel,
   startAutomadInstall,
   startInstall,
+  startPapersInstall,
   writeCredential,
 } from './panel.ts'
+import type { InstallTask } from './panel.ts'
+import { fetchPaper } from './papers/fetch.ts'
+import { searchPapers } from './papers/search.ts'
 import { CREDENTIALS_PATH, INSTALL_PATH, PANEL_PATH } from './routes.ts'
 import { downloadBook } from './reserves.ts'
 import { readStatus } from './status.ts'
@@ -81,7 +86,7 @@ export function apply(ctx: Context, config: unknown): void {
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'thu_status',
-    description: 'Check whether Tsinghua Learn credentials and the reserves downloader are configured. Does not reveal secret values.',
+    description: 'Check whether Tsinghua Learn credentials, the reserves downloader, and the paper CLI are configured. Does not reveal secret values.',
     parameters: {},
     output: {
       schema: {
@@ -107,11 +112,21 @@ export function apply(ctx: Context, config: unknown): void {
               token: { type: 'boolean', required: true, description: 'Whether a reserves token is configured.' },
             },
           },
+          papers: {
+            type: 'object',
+            required: true,
+            additionalProperties: false,
+            properties: {
+              cli: { type: 'string', description: 'The paper CLI that will be spawned; absent when none is runnable.' },
+              email: { type: 'boolean', required: true, description: 'Whether the email the open-access lookup needs is saved.' },
+              school: { type: 'string', description: "Institution named in the paper CLI's own config, when it names one." },
+            },
+          },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `learn credential=${String(value.learn.credential)} session=${String(value.learn.session)} shared-fingerprint=${String(value.learn.sharedFingerprint)}; reserves cli=${String(value.reserves.cli)} token=${String(value.reserves.token)}`,
+        text: `learn credential=${String(value.learn.credential)} session=${String(value.learn.session)} shared-fingerprint=${String(value.learn.sharedFingerprint)}; reserves cli=${String(value.reserves.cli)} token=${String(value.reserves.token)}; papers cli=${value.papers.cli ?? 'none'} email=${String(value.papers.email)} school=${value.papers.school ?? 'none'}`,
       }],
     },
     async execute() {
@@ -537,6 +552,135 @@ export function apply(ctx: Context, config: unknown): void {
     },
   })), 'thu: reserves download tool')
 
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'thu_paper_search',
+    description: 'Search for papers by keyword via Semantic Scholar and return titles, authors, year, venue, DOI/arXiv ids and citation counts. Needs no login and no local CLI: it calls the public API directly. Rate limits come back as reason "rate-limited".',
+    parameters: {
+      query: { type: 'string', required: true, description: 'Keywords, e.g. a title, an author plus topic, or a method name.' },
+      limit: { type: 'integer', description: 'Hits to return, 1–100. Defaults to 10.' },
+      year: { type: 'string', description: 'Inclusive year range such as 2020-2024, or a single year.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          reason: { type: 'string', description: 'Why the search failed: rate-limited or bad-request.' },
+          message: { type: 'string' },
+          retryAfterSec: { type: 'number', description: 'Seconds the API asked the caller to wait, when it said.' },
+          total: { type: 'number', description: 'Hits matched in total, before the limit.' },
+          results: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                title: { type: 'string', required: true },
+                authors: { type: 'array', required: true, items: { type: 'string' } },
+                year: { type: 'number' },
+                venue: { type: 'string' },
+                doi: { type: 'string' },
+                arxivId: { type: 'string' },
+                citations: { type: 'number', required: true },
+                abstract: { type: 'string' },
+                url: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        if (!value.ok) {
+          return [{ type: 'text', text: `paper search failed: ${value.reason ?? 'unknown'} — ${value.message ?? ''}` }]
+        }
+        const results = value.results ?? []
+        if (results.length === 0) return [{ type: 'text', text: 'no papers matched' }]
+        const lines = results.map((hit, index) => {
+          const ids = [hit.doi === undefined ? '' : `doi:${hit.doi}`, hit.arxivId === undefined ? '' : `arXiv:${hit.arxivId}`]
+            .filter(part => part.length > 0)
+            .join(' ')
+          const head = `${String(index + 1)}. ${hit.title}${hit.year === undefined ? '' : ` (${String(hit.year)})`}${hit.venue === undefined ? '' : ` — ${hit.venue}`}`
+          const foot = [ids, `${String(hit.citations)} citations`].filter(part => part.length > 0).join(' · ')
+          return `${head}\n   ${foot}`
+        })
+        return [{ type: 'text', text: [`${String(results.length)} of ${String(value.total ?? results.length)} hits`, ...lines].join('\n') }]
+      },
+    },
+    async execute(args, exec) {
+      const result = await searchPapers({
+        query: args.query,
+        limit: args.limit ?? 10,
+        ...(args.year === undefined ? {} : { year: args.year }),
+      }, { timeoutMs: options.timeoutMs, signal: exec.signal })
+      return result.ok ? result : { ...result, results: [] }
+    },
+  })), 'thu: paper search tool')
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'thu_paper_fetch',
+    description: 'Fetch one paper as a PDF into the workspace, open-access first and then through the university license, by running the locally installed paper CLI (instsci) as a subprocess. The CLI must be installed from Settings → Tsinghua tools and needs THU_PAPER_EMAIL. Publisher routes open a visible browser window and wait for a manual login, so a call can take minutes; accepts a DOI, an arXiv id, or a URL.',
+    parameters: {
+      identifier: { type: 'string', required: true, description: 'DOI (10.1103/PhysRevLett.116.061102), arXiv id (2401.01234), or a paper URL.' },
+      overwrite: { type: 'boolean', description: 'Replace an existing PDF of the same name. Defaults to false, which adds -1.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          reason: { type: 'string', description: 'Why the fetch failed: cli-missing, missing-credential, timeout, cancelled, exit-nonzero, unparseable-output, no-pdf, invalid-pdf.' },
+          message: { type: 'string', description: 'What the user should do about a failure.' },
+          log: { type: 'string', description: 'Tail of the CLI output, for failures.' },
+          identifier: { type: 'string' },
+          doi: { type: 'string' },
+          arxivId: { type: 'string' },
+          title: { type: 'string' },
+          status: { type: 'string', description: 'The CLI\'s own classification: success, partial, blocked, …' },
+          quality: { type: 'string', description: 'What was obtained: full_text, pdf_only, metadata_only, …' },
+          source: { type: 'string', description: 'Which route delivered the PDF: open_access, arxiv, institutional.' },
+          path: { type: 'string', description: 'Local absolute path of the saved PDF.' },
+          bytes: { type: 'number' },
+          durationMs: { type: 'number' },
+        },
+      },
+      render: (_args, value) => {
+        if (!value.ok) {
+          const tail = value.log === undefined ? [] : [`out: ${value.log.split('\n').slice(-5).join(' | ')}`]
+          return [{ type: 'text', text: [`paper fetch failed: ${value.reason ?? 'unknown'} — ${value.message ?? ''}`, ...tail].join('\n') }]
+        }
+        return [{
+          type: 'text',
+          text: `${value.title ?? value.identifier ?? 'paper'} — ${value.source ?? 'unknown'} source, ${formatBytes(value.bytes ?? 0)} in ${((value.durationMs ?? 0) / 1_000).toFixed(1)}s\n${value.path ?? ''}`,
+        }]
+      },
+    },
+    async execute(args, exec) {
+      if (exec.agent === undefined) throw new Error('thu_paper_fetch requires an agent Session')
+      const cwd = await sessionDirectory(ctx, exec.agent, exec.signal)
+      return fetchPaper(ctx, options, cwd, {
+        identifier: args.identifier,
+        ...(args.overwrite === undefined ? {} : { overwrite: args.overwrite }),
+      }, exec.signal)
+    },
+  })), 'thu: paper fetch tool')
+
+/**
+ * Start the install a panel request asked for.
+ * @param tool - the requested installer.
+ * @param options - validated plugin options.
+ * @returns the started task, a refusal, or undefined when the name is unknown.
+ */
+async function installFor(tool: unknown, options: ThuOptions): Promise<InstallTask | { ok: false; reason: string } | undefined> {
+  if (tool === 'reserves') return startInstall(options)
+  if (tool === 'automad') return await startAutomadInstall()
+  if (tool === 'papers') return await startPapersInstall()
+  return undefined
+}
+
   ctx.effect(() => ctx.connection.fetch.register({
     path: PANEL_PATH,
     methods: ['GET'],
@@ -558,9 +702,7 @@ export function apply(ctx: Context, config: unknown): void {
         return Response.json(task, { headers: { 'cache-control': 'no-store' } })
       }
       const body = await readJson(request)
-      const task = body.tool === 'reserves'
-        ? startInstall(options)
-        : body.tool === 'automad' ? await startAutomadInstall() : undefined
+      const task = await installFor(body.tool, options)
       if (task === undefined) {
         return Response.json({ ok: false, reason: 'unknown-tool' }, { status: 400 })
       }

@@ -29,7 +29,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ThuOptions } from './config.ts'
 import { reservesCliPath } from './config.ts'
-import { downloadRoot } from './download.ts'
+import { downloadRoot, freePath } from './download.ts'
 
 /** Why a reserves download could not finish. Domain values, not exceptions. */
 export type ReservesReason =
@@ -166,23 +166,6 @@ export async function cliReady(path: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-/** Pick a file name that does not clobber an earlier download. */
-async function freePath(directory: string, name: string): Promise<string> {
-  let candidate = join(directory, name)
-  for (let index = 1; index <= 99; index += 1) {
-    try {
-      await stat(candidate)
-    } catch {
-      return candidate
-    }
-    const dot = name.lastIndexOf('.')
-    const stem = dot > 0 ? name.slice(0, dot) : name
-    const suffix = dot > 0 ? name.slice(dot) : ''
-    candidate = join(directory, `${stem}-${String(index)}${suffix}`)
-  }
-  return candidate
 }
 
 /** Everything the child printed, capped so a runaway log cannot exhaust memory. */

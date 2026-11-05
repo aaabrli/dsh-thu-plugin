@@ -21,6 +21,7 @@ import {
   pollInstall,
   saveCredential,
   startAutomadInstall,
+  startPapersInstall,
   startReservesInstall,
   type FieldView,
   type PanelView,
@@ -42,6 +43,7 @@ const LABELS = {
   fingerprint: 'field.fingerprint',
   cookie: 'field.cookie',
   'reserves-token': 'field.reservesToken',
+  'paper-email': 'field.paperEmail',
 } as const
 
 /**
@@ -53,6 +55,7 @@ const GROUPS = [
   { title: 'group.identity.title', hint: 'group.identity.hint', ids: ['username', 'password'] },
   { title: 'group.learn.title', hint: 'group.learn.hint', ids: ['fingerprint', 'cookie'] },
   { title: 'group.reserves.title', hint: 'group.reserves.hint', ids: ['reserves-token'] },
+  { title: 'group.papers.title', hint: 'group.papers.hint', ids: ['paper-email'] },
 ] as const
 
 /**
@@ -64,9 +67,10 @@ export const ThuSection = memo(function ThuSection({ t }: SectionProps) {
   const [panel, setPanel] = useState<PanelView | null>(null)
   const [revision, setRevision] = useState(0)
   const [taskId, setTaskId] = useState<string | null>(null)
-  const [taskKind, setTaskKind] = useState<'reserves' | 'automad'>('reserves')
+  const [taskKind, setTaskKind] = useState<'reserves' | 'papers' | 'automad'>('reserves')
   const [installError, setInstallError] = useState<string | null>(null)
   const [installLog, setInstallLog] = useState<string | null>(null)
+  const [installProgress, setInstallProgress] = useState<string | null>(null)
   const [automadRestart, setAutomadRestart] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
@@ -85,6 +89,7 @@ export const ThuSection = memo(function ThuSection({ t }: SectionProps) {
     if (taskId === null) return
     const timer = setInterval(() => {
       void pollInstall(taskId).then(task => {
+        setInstallProgress(task.state === 'running' ? task.progress ?? null : null)
         if (task.state === 'done') {
           setTaskId(null)
           if (task.restartRequired === true) setAutomadRestart(true)
@@ -100,6 +105,7 @@ export const ThuSection = memo(function ThuSection({ t }: SectionProps) {
   }, [taskId, t])
 
   const reserves = panel?.tools.find(item => item.id === 'reserves')
+  const papers = panel?.tools.find(item => item.id === 'papers')
   const automad = panel?.tools.find(item => item.id === 'automad')
   const fingerprint = panel?.fields.find(field => field.id === 'fingerprint')
 
@@ -170,7 +176,35 @@ export const ThuSection = memo(function ThuSection({ t }: SectionProps) {
             />
           </span>
         </div>
+        <div className={css.row}>
+          <span className={css.rowLabel}>{t('papers.title')}</span>
+          <span className={css.rowValue}>
+            <Badge
+              tone={papers?.installed === true ? 'ok' : 'idle'}
+              text={papers?.installed === true ? t('tool.installed') : t('tool.missing')}
+            />
+            <Button
+              onClick={() => {
+                setInstallError(null)
+                setInstallLog(null)
+                setInstallProgress(null)
+                setTaskKind('papers')
+                void startPapersInstall().then(task => {
+                  if (task.taskId !== undefined) setTaskId(task.taskId)
+                  else setInstallError(task.error ?? (task.reason === 'no-installer' ? t('papers.noInstaller') : t('tool.failed')))
+                })
+              }}
+              disabled={taskId !== null}
+            >
+              {taskId !== null && taskKind === 'papers' ? t('papers.installing') : t('papers.install')}
+            </Button>
+          </span>
+        </div>
+        {papers?.path ? <p className={css.note}>{t('papers.path')} {papers.path}</p> : null}
+        {installProgress !== null ? <p className={css.note}>{installProgress}</p> : null}
         <p className={css.note}>{t('status.fingerprint.hint')}</p>
+        {installError !== null ? <p className={css.error}>{installError}</p> : null}
+        {installLog !== null ? <pre className={css.log}>{installLog}</pre> : null}
       </section>
 
       <section className={css.card} aria-labelledby="thu-automad-title">
@@ -203,8 +237,6 @@ export const ThuSection = memo(function ThuSection({ t }: SectionProps) {
         <p className={css.note}>{t('automad.spec')} {automad?.spec ?? ''}</p>
         {automad?.profile ? <p className={css.note}>{t('automad.profile')} {automad.profile}</p> : null}
         {automadRestart ? <p className={css.note}>{t('automad.restart')}</p> : null}
-        {installError !== null ? <p className={css.error}>{installError}</p> : null}
-        {installLog !== null ? <pre className={css.log}>{installLog}</pre> : null}
       </section>
 
       {GROUPS.map(group => {
