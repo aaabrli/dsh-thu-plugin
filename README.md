@@ -26,11 +26,11 @@
 发在 npm 上，装进 profile 再重启 `dsh web`：
 
 ```bash
-dsh plugin --profile <profile 名> add dsh-thu-plugin
-# 想钉住版本：add dsh-thu-plugin@0.2.0
+dsh plugin --profile web add dsh-thu-plugin
+dsh plugin --profile web add dsh-thu-plugin@0.2.0   # 想钉住版本
 ```
 
-装好并重启后，设置页里会多出一页「清华工具」。
+`web` 就是你在用的 profile 名，换掉那一处即可。装好并重启后，设置页里会多出一页「清华工具」。
 
 源码在 [github.com/aaabrli/dsh-thu-plugin](https://github.com/aaabrli/dsh-thu-plugin)，仓库只存源码，`lib/` 是构建产物。改代码而不是只用插件的话，见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)：`prepack` 在打包时自动构建，而构建要链到 DSH 工作副本里的内部包，所以开发得在那份工作副本里做。
 
