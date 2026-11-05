@@ -32,7 +32,7 @@ dsh plugin --profile <profile 名> add dsh-thu-plugin
 
 装好并重启后，设置页里会多出一页「清华工具」。
 
-改代码而不是只用插件的话，见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)：仓库只存源码，`lib/` 是构建产物（`prepack` 在打包时自动构建），而构建要链到 DSH 工作副本里的内部包，所以开发得在那份工作副本里做。
+源码在 [github.com/aaabrli/dsh-thu-plugin](https://github.com/aaabrli/dsh-thu-plugin)，仓库只存源码，`lib/` 是构建产物。改代码而不是只用插件的话，见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)：`prepack` 在打包时自动构建，而构建要链到 DSH 工作副本里的内部包，所以开发得在那份工作副本里做。
 
 ## 第一次用：填三样东西
 
