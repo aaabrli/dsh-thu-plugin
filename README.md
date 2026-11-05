@@ -23,14 +23,16 @@
 
 ## 安装
 
-插件的发布形态还没有远端仓库，所以目前有两种装法：
+发在 npm 上，装进 profile 再重启 `dsh web`：
 
-- **装进你的 profile**：把本目录加进去，然后重启 `dsh web`。
-  `dsh plugin --profile <profile 名> add <本目录绝对路径>`
-- **只在本机开发调试**：用本目录的 `dev.overlay.yml` 起一个只加载这个插件的 Host，
-  见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)。
+```bash
+dsh plugin --profile <profile 名> add dsh-thu-plugin
+# 想钉住版本：add dsh-thu-plugin@0.2.0
+```
 
 装好并重启后，设置页里会多出一页「清华工具」。
+
+改代码而不是只用插件的话，见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md)：仓库只存源码，`lib/` 是构建产物（`prepack` 在打包时自动构建），而构建要链到 DSH 工作副本里的内部包，所以开发得在那份工作副本里做。
 
 ## 第一次用：填三样东西
 
@@ -110,4 +112,8 @@ thu-downloads/
 | [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) | 实现细节、面板设计、真机验证记录、踩过的坑 |
 | [doc/CHANGELOG.md](doc/CHANGELOG.md) | 版本变更 |
 
-发版约定：改 `package.json` 的 `version` → 更新 `doc/CHANGELOG.md` → `git commit` → `git tag -a vX.Y.Z`。
+发版约定：改 `package.json` 的 `version` → 更新 `doc/CHANGELOG.md` → `git commit` → `git tag -a vX.Y.Z` → `npm publish`。`prepack` 会先跑一次构建，打出的包里带 `lib/`；`src/` 跟着发布只为让类型定义与源码可查。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。论文路线的外部依赖 [`instsci`](https://github.com/Rimagination/instsci) 也是 MIT，各自独立。

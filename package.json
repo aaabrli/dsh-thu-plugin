@@ -2,6 +2,18 @@
   "name": "dsh-thu-plugin",
   "version": "0.2.0",
   "description": "DSH plugin: Tsinghua Learn files, course reserves, Cloud share links, and paper PDFs.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aaabrli/dsh-thu-plugin.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "tsinghua",
+    "learn",
+    "papers"
+  ],
+  "author": "aaabrli",
   "type": "module",
   "main": "lib/index.js",
   "types": "src/index.ts",
@@ -34,14 +46,15 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-credentials": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/dsh-working-directory": "*"
+    "@deepseek-ai/cordis": "^4.0.6-alpha.1",
+    "@deepseek-ai/dsh-credentials": "^0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "^0.2.2-alpha.2",
+    "@deepseek-ai/dsh-working-directory": "^0.2.2-alpha.2"
   },
   "scripts": {
     "setup:dev": "mkdir -p node_modules/@deepseek-ai && ln -sfn ../../../packages/core/tools node_modules/@deepseek-ai/dsh-tools && ln -sfn ../../../packages/credentials/credentials node_modules/@deepseek-ai/dsh-credentials && ln -sfn ../../../packages/session/working-directory node_modules/@deepseek-ai/dsh-working-directory && ln -sfn ../../../vendor/cordis node_modules/@deepseek-ai/cordis",
     "build": "tsdown",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json",
     "check:host": "tsx --tsconfig tsconfig.check.json checks/host-smoke.ts",
     "check:client": "tsx --tsconfig tsconfig.check.json checks/client-bundle.ts",
